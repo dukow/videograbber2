@@ -1,21 +1,59 @@
-name: videograbber
-description: Browse any site, download any video in 720p / 1080p / MP3 - fully on-device.
-publish_to: "none"
-version: 2.0.0+2
+name: Build APK
 
-environment:
-  sdk: ">=3.3.0 <4.0.0"
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
 
-dependencies:
-  flutter:
-    sdk: flutter
-  permission_handler: ^11.3.1
-  webview_flutter: ^4.9.0
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-dev_dependencies:
-  flutter_test:
-    sdk: flutter
-  flutter_lints: ^4.0.0
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
 
-flutter:
-  uses-material-design: true
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Create Flutter project skeleton
+        run: |
+          flutter create --org com.dukoow --project-name videograbber app
+
+      - name: Copy source files into project
+        run: |
+          cp -f lib/main.dart app/lib/main.dart
+          cp -f pubspec.yaml app/pubspec.yaml
+          cp -f android/app/build.gradle.kts app/android/app/build.gradle.kts
+          cp -f android/app/src/main/AndroidManifest.xml app/android/app/src/main/AndroidManifest.xml
+          mkdir -p app/android/app/src/main/kotlin/com/dukoow/videograbber
+          cp -f android/app/src/main/kotlin/com/dukoow/videograbber/MainActivity.kt \
+                app/android/app/src/main/kotlin/com/dukoow/videograbber/MainActivity.kt
+
+      - name: Build APK
+        run: |
+          set -o pipefail
+          cd app
+          flutter pub get 2>&1 | tee -a build_log.txt
+          flutter build apk --release --verbose 2>&1 | tee -a build_log.txt
+
+      - name: Show error publicly on failure
+        if: failure()
+        run: |
+          echo "## BUILD FAILED - LAST 150 LINES OF LOG" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -150 app/build_log.txt >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "no log captured" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoGrabber-APK
+          path: app/build/app/outputs/flutter-apk/app-release.apk
