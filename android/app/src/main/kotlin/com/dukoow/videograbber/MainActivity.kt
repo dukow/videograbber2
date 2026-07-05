@@ -12,12 +12,17 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import kotlin.concurrent.thread
 
 class MainActivity : FlutterActivity() {
 
     private val methodChannelName = "video_grabber/downloader"
     private val progressChannelName = "video_grabber/progress"
+
+    private val mobileUA =
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 
     private var progressSink: EventChannel.EventSink? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -54,11 +59,16 @@ class MainActivity : FlutterActivity() {
                         val url = call.argument<String>("url") ?: run {
                             result.error("NO_URL", "URL is required", null); return@setMethodCallHandler
                         }
+                        val referer = call.argument<String>("referer")
                         thread {
                             try {
                                 ensureInit()
                                 val request = YoutubeDLRequest(url)
                                 request.addOption("--no-playlist")
+                                if (!referer.isNullOrEmpty()) {
+                                    request.addOption("--referer", referer)
+                                    request.addOption("--user-agent", mobileUA)
+                                }
                                 val info = YoutubeDL.getInstance().getInfo(request)
                                 val map = hashMapOf<String, Any?>(
                                     "title" to info.title,
@@ -80,6 +90,7 @@ class MainActivity : FlutterActivity() {
                             result.error("NO_URL", "URL is required", null); return@setMethodCallHandler
                         }
                         val quality = call.argument<String>("quality") ?: "720"
+                        val referer = call.argument<String>("referer")
                         thread {
                             try {
                                 ensureInit()
@@ -94,6 +105,10 @@ class MainActivity : FlutterActivity() {
                                 val request = YoutubeDLRequest(url)
                                 request.addOption("--no-playlist")
                                 request.addOption("--no-mtime")
+                                if (!referer.isNullOrEmpty()) {
+                                    request.addOption("--referer", referer)
+                                    request.addOption("--user-agent", mobileUA)
+                                }
 
                                 if (quality == "mp3") {
                                     request.addOption("-x")
@@ -106,7 +121,7 @@ class MainActivity : FlutterActivity() {
                                 } else {
                                     request.addOption(
                                         "-f",
-                                        "bestvideo[height<=$quality]+bestaudio/best[height<=$quality]"
+                                        "bestvideo[height<=$quality]+bestaudio/best[height<=$quality]/best"
                                     )
                                     request.addOption("--merge-output-format", "mp4")
                                     request.addOption(
@@ -139,14 +154,23 @@ class MainActivity : FlutterActivity() {
                         thread {
                             try {
                                 ensureInit()
-                                YoutubeDL.getInstance().updateYoutubeDL(
-                                    application,
-                                    YoutubeDL.UpdateChannel.STABLE
-                                )
+                                customUpdateYtdlp()
                                 mainHandler.post { result.success(true) }
-                            } catch (e: Throwable) {
-                                mainHandler.post {
-                                    result.error("UPDATE_ERROR", e.message ?: e.toString(), null)
+                            } catch (e1: Throwable) {
+                                try {
+                                    YoutubeDL.getInstance().updateYoutubeDL(
+                                        application,
+                                        YoutubeDL.UpdateChannel.STABLE
+                                    )
+                                    mainHandler.post { result.success(true) }
+                                } catch (e2: Throwable) {
+                                    mainHandler.post {
+                                        result.error(
+                                            "UPDATE_ERROR",
+                                            (e1.message ?: e1.toString()) + " | " + (e2.message ?: e2.toString()),
+                                            null
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -155,6 +179,49 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    private fun customUpdateYtdlp() {
+        val direct = URL("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp")
+        var conn = direct.openConnection() as HttpURLConnection
+        conn.connectTimeout = 30000
+        conn.readTimeout = 180000
+        conn.instanceFollowRedirects = true
+
+        var redirects = 0
+        while (conn.responseCode in 300..399 && redirects < 5) {
+            val loc = conn.getHeaderField("Location") ?: break
+            conn.disconnect()
+            conn = URL(loc).openConnection() as HttpURLConnection
+            conn.connectTimeout = 30000
+            conn.readTimeout = 180000
+            redirects++
+        }
+        if (conn.responseCode !in 200..299) {
+            throw RuntimeException("Download failed with HTTP ${conn.responseCode}")
+        }
+
+        val tmp = File.createTempFile("yt-dlp-new", null, cacheDir)
+        conn.inputStream.use { input ->
+            tmp.outputStream().use { output -> input.copyTo(output) }
+        }
+        conn.disconnect()
+
+        if (tmp.length() < 500_000) {
+            tmp.delete()
+            throw RuntimeException("Downloaded file too small, aborting")
+        }
+
+        val ytdlpDir = File(
+            File(applicationContext.noBackupFilesDir, YoutubeDL.baseName),
+            YoutubeDL.ytdlpDirName
+        )
+        if (ytdlpDir.exists()) ytdlpDir.deleteRecursively()
+        ytdlpDir.mkdirs()
+        tmp.copyTo(File(ytdlpDir, YoutubeDL.ytdlpBin), overwrite = true)
+        tmp.delete()
+
+        YoutubeDL.getInstance().init_ytdlp(applicationContext, ytdlpDir)
     }
 
     @Synchronized
