@@ -39,18 +39,17 @@ jobs:
       - name: Patch Gradle file with yt-dlp library
         run: |
           cd app/android/app
-          # ensure native libs are extracted (needed by embedded python/ffmpeg)
-          sed -i '/compileSdk = flutter.compileSdkVersion/a\    packaging { jniLibs { useLegacyPackaging = true } }' build.gradle.kts
-          # library needs Android 7+ minimum
-          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' build.gradle.kts
-          # add the yt-dlp + ffmpeg dependencies at the end
-          cat >> build.gradle.kts << 'EOF'
-
-          dependencies {
-              implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
-              implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
-          }
-          EOF
+          python3 << 'PYEOF'
+          import re
+          p = 'build.gradle.kts'
+          s = open(p).read()
+          s = s.replace('android {', 'android {\n    packaging { jniLibs { useLegacyPackaging = true } }', 1)
+          s = re.sub(r'minSdk\s*=\s*flutter\.minSdkVersion', 'minSdk = 24', s)
+          s = s.replace('release {', 'release {\n            isMinifyEnabled = false\n            isShrinkResources = false', 1)
+          if 'youtubedl-android' not in s:
+              s += '\ndependencies {\n    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")\n    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")\n}\n'
+          open(p, 'w').write(s)
+          PYEOF
           echo "=== Patched build.gradle.kts ==="
           cat build.gradle.kts
 
