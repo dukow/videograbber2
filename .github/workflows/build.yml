@@ -58,6 +58,10 @@ jobs:
           set -o pipefail
           cd app
           flutter pub get 2>&1 | tee -a build_log.txt
+          # Fix outdated proguard reference inside the inappwebview plugin
+          sed -i "s/proguard-android\.txt/proguard-android-optimize.txt/g" \
+            $HOME/.pub-cache/hosted/pub.dev/flutter_inappwebview_android-*/android/build.gradle
+          echo "Patched inappwebview plugin proguard reference" | tee -a build_log.txt
           flutter build apk --release 2>&1 | tee -a build_log.txt
 
       - name: Show error publicly on failure
