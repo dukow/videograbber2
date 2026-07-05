@@ -31,17 +31,43 @@ jobs:
         run: |
           cp -f lib/main.dart app/lib/main.dart
           cp -f pubspec.yaml app/pubspec.yaml
-          cp -f android/app/build.gradle.kts app/android/app/build.gradle.kts
           cp -f android/app/src/main/AndroidManifest.xml app/android/app/src/main/AndroidManifest.xml
           mkdir -p app/android/app/src/main/kotlin/com/dukoow/videograbber
           cp -f android/app/src/main/kotlin/com/dukoow/videograbber/MainActivity.kt \
                 app/android/app/src/main/kotlin/com/dukoow/videograbber/MainActivity.kt
 
+      - name: Patch Gradle file with yt-dlp library
+        run: |
+          cd app/android/app
+          # ensure native libs are extracted (needed by embedded python/ffmpeg)
+          sed -i '/compileSdk = flutter.compileSdkVersion/a\    packaging { jniLibs { useLegacyPackaging = true } }' build.gradle.kts
+          # library needs Android 7+ minimum
+          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 24/' build.gradle.kts
+          # add the yt-dlp + ffmpeg dependencies at the end
+          cat >> build.gradle.kts << 'EOF'
+
+          dependencies {
+              implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
+              implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
+          }
+          EOF
+          echo "=== Patched build.gradle.kts ==="
+          cat build.gradle.kts
+
       - name: Build APK
         run: |
+          set -o pipefail
           cd app
-          flutter pub get
-          flutter build apk --release
+          flutter pub get 2>&1 | tee -a build_log.txt
+          flutter build apk --release 2>&1 | tee -a build_log.txt
+
+      - name: Show error publicly on failure
+        if: failure()
+        run: |
+          echo "## BUILD FAILED - LAST 150 LINES OF LOG" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -150 app/build_log.txt >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "no log captured" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
