@@ -1,0 +1,50 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Create Flutter project skeleton
+        run: |
+          flutter create --org com.dukoow --project-name videograbber app
+
+      - name: Copy source files into project
+        run: |
+          cp -f lib/main.dart app/lib/main.dart
+          cp -f pubspec.yaml app/pubspec.yaml
+          cp -f android/app/build.gradle.kts app/android/app/build.gradle.kts
+          cp -f android/app/src/main/AndroidManifest.xml app/android/app/src/main/AndroidManifest.xml
+          mkdir -p app/android/app/src/main/kotlin/com/dukoow/videograbber
+          cp -f android/app/src/main/kotlin/com/dukoow/videograbber/MainActivity.kt \
+                app/android/app/src/main/kotlin/com/dukoow/videograbber/MainActivity.kt
+
+      - name: Build APK
+        run: |
+          cd app
+          flutter pub get
+          flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoGrabber-APK
+          path: app/build/app/outputs/flutter-apk/app-release.apk
