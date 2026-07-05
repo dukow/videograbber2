@@ -2,9 +2,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:webview_flutter/webview_flutter.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const VideoGrabberApp());
 }
 
@@ -30,20 +31,20 @@ class VideoGrabberApp extends StatelessWidget {
   }
 }
 
-/// ---------------------------------------------------------------------------
-/// Shared downloader service (talks to native yt-dlp)
-/// ---------------------------------------------------------------------------
 class Downloader {
   static const channel = MethodChannel('video_grabber/downloader');
   static const progressChannel = EventChannel('video_grabber/progress');
 
-  static Future<Map<String, dynamic>?> getInfo(String url) async {
-    return channel.invokeMapMethod<String, dynamic>('getInfo', {'url': url});
+  static Future<Map<String, dynamic>?> getInfo(String url,
+      {String? referer}) async {
+    return channel.invokeMapMethod<String, dynamic>(
+        'getInfo', {'url': url, 'referer': referer});
   }
 
-  static Future<String?> download(String url, String quality) async {
-    return channel
-        .invokeMethod<String>('download', {'url': url, 'quality': quality});
+  static Future<String?> download(String url, String quality,
+      {String? referer}) async {
+    return channel.invokeMethod<String>(
+        'download', {'url': url, 'quality': quality, 'referer': referer});
   }
 
   static Future<void> updateEngine() async {
@@ -59,9 +60,6 @@ class Downloader {
   }
 }
 
-/// ---------------------------------------------------------------------------
-/// Main shell with bottom tabs
-/// ---------------------------------------------------------------------------
 class MainShell extends StatefulWidget {
   const MainShell({super.key});
 
@@ -87,10 +85,10 @@ class _MainShellState extends State<MainShell> {
     ].request();
   }
 
-  void openInDownloader(String url) {
+  void openInDownloader(String url, {String? referer}) {
     setState(() => _tab = 0);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _downloaderKey.currentState?.loadUrl(url);
+      _downloaderKey.currentState?.loadUrl(url, referer: referer);
     });
   }
 
@@ -117,9 +115,6 @@ class _MainShellState extends State<MainShell> {
   }
 }
 
-/// ---------------------------------------------------------------------------
-/// TAB 1: Paste-link downloader
-/// ---------------------------------------------------------------------------
 class DownloaderPage extends StatefulWidget {
   const DownloaderPage({super.key});
 
@@ -133,10 +128,12 @@ class _DownloaderPageState extends State<DownloaderPage> {
   Map<String, dynamic>? _videoInfo;
   bool _loadingInfo = false;
   bool _downloading = false;
+  bool _updating = false;
   double _progress = 0;
   String _eta = '';
   String _status = '';
   String? _savedPath;
+  String? _referer;
   StreamSubscription? _progressSub;
 
   @override
@@ -162,8 +159,9 @@ class _DownloaderPageState extends State<DownloaderPage> {
     }
   }
 
-  void loadUrl(String url) {
+  void loadUrl(String url, {String? referer}) {
     _urlController.text = url.trim();
+    _referer = referer;
     _fetchInfo();
   }
 
@@ -184,7 +182,7 @@ class _DownloaderPageState extends State<DownloaderPage> {
       _status = 'Getting video info...';
     });
     try {
-      final result = await Downloader.getInfo(url);
+      final result = await Downloader.getInfo(url, referer: _referer);
       setState(() {
         _videoInfo = result;
         _status = '';
@@ -207,7 +205,8 @@ class _DownloaderPageState extends State<DownloaderPage> {
       _status = 'Downloading $label...';
     });
     try {
-      final path = await Downloader.download(url, quality);
+      final path =
+          await Downloader.download(url, quality, referer: _referer);
       setState(() {
         _savedPath = path;
         _status = 'Saved successfully!';
@@ -221,12 +220,18 @@ class _DownloaderPageState extends State<DownloaderPage> {
   }
 
   Future<void> _updateEngine() async {
-    setState(() => _status = 'Updating yt-dlp engine...');
+    if (_updating) return;
+    setState(() {
+      _updating = true;
+      _status = 'Updating engine... this can take 1-2 minutes, please wait';
+    });
     try {
       await Downloader.updateEngine();
-      setState(() => _status = 'Engine updated!');
+      setState(() => _status = 'Engine updated successfully!');
     } on PlatformException catch (e) {
       setState(() => _status = 'Update failed: ${e.message}');
+    } finally {
+      setState(() => _updating = false);
     }
   }
 
@@ -245,11 +250,19 @@ class _DownloaderPageState extends State<DownloaderPage> {
             style: TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: Colors.transparent,
         actions: [
-          IconButton(
-            tooltip: 'Update yt-dlp engine',
-            icon: const Icon(Icons.system_update_alt),
-            onPressed: _downloading ? null : _updateEngine,
-          ),
+          _updating
+              ? const Padding(
+                  padding: EdgeInsets.all(14),
+                  child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2)),
+                )
+              : IconButton(
+                  tooltip: 'Update yt-dlp engine',
+                  icon: const Icon(Icons.system_update_alt),
+                  onPressed: _downloading ? null : _updateEngine,
+                ),
         ],
       ),
       body: SingleChildScrollView(
@@ -425,11 +438,8 @@ class _DownloaderPageState extends State<DownloaderPage> {
   }
 }
 
-/// ---------------------------------------------------------------------------
-/// TAB 2: In-app browser with floating download button
-/// ---------------------------------------------------------------------------
 class BrowserPage extends StatefulWidget {
-  final void Function(String url) onDownloadRequest;
+  final void Function(String url, {String? referer}) onDownloadRequest;
   const BrowserPage({super.key, required this.onDownloadRequest});
 
   @override
@@ -437,11 +447,17 @@ class BrowserPage extends StatefulWidget {
 }
 
 class _BrowserPageState extends State<BrowserPage> {
-  late final WebViewController _controller;
+  InAppWebViewController? _web;
   final TextEditingController _addressController =
       TextEditingController(text: 'https://m.youtube.com');
   double _loadProgress = 0;
   String _currentUrl = 'https://m.youtube.com';
+
+  // Sniffed media stream URLs found on the current page
+  final List<String> _sniffed = [];
+
+  static const _mobileUA =
+      'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
 
   static const _shortcuts = <String, String>{
     'YouTube': 'https://m.youtube.com',
@@ -452,35 +468,24 @@ class _BrowserPageState extends State<BrowserPage> {
     'Dailymotion': 'https://www.dailymotion.com',
   };
 
-  @override
-  void initState() {
-    super.initState();
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onProgress: (p) => setState(() => _loadProgress = p / 100),
-          onPageStarted: (url) => setState(() {
-            _currentUrl = url;
-            _addressController.text = url;
-          }),
-          onPageFinished: (url) => setState(() {
-            _currentUrl = url;
-            _addressController.text = url;
-            _loadProgress = 0;
-          }),
-          onUrlChange: (change) {
-            final u = change.url;
-            if (u != null) {
-              setState(() {
-                _currentUrl = u;
-                _addressController.text = u;
-              });
-            }
-          },
-        ),
-      )
-      ..loadRequest(Uri.parse(_currentUrl));
+  void _maybeSniff(String url) {
+    final u = url.toLowerCase();
+    // skip tiny segment files - we want the playlist/manifest or full file
+    if (u.contains('.ts?') || u.endsWith('.ts') || u.contains('.m4s')) return;
+    final isMedia = u.contains('.m3u8') ||
+        u.contains('.mpd') ||
+        u.contains('.mp4') ||
+        u.contains('.webm') ||
+        u.contains('.mov') ||
+        u.contains('videoplayback');
+    if (!isMedia) return;
+    if (_sniffed.contains(url)) return;
+    if (mounted) {
+      setState(() {
+        _sniffed.insert(0, url);
+        if (_sniffed.length > 15) _sniffed.removeLast();
+      });
+    }
   }
 
   void _go() {
@@ -493,7 +498,74 @@ class _BrowserPageState extends State<BrowserPage> {
         input = 'https://www.google.com/search?q=${Uri.encodeComponent(input)}';
       }
     }
-    _controller.loadRequest(Uri.parse(input));
+    _web?.loadUrl(urlRequest: URLRequest(url: WebUri(input)));
+  }
+
+  String _shortName(String url) {
+    var name = url.split('?').first.split('/').last;
+    if (name.isEmpty) name = url;
+    String type = 'Video';
+    final u = url.toLowerCase();
+    if (u.contains('.m3u8')) type = 'HLS stream';
+    if (u.contains('.mpd')) type = 'DASH stream';
+    if (u.contains('.mp4')) type = 'MP4 file';
+    if (u.contains('.webm')) type = 'WEBM file';
+    return '$type  •  $name';
+  }
+
+  void _openDownloadSheet() {
+    if (_sniffed.isEmpty) {
+      // nothing sniffed - use the page URL (works for YouTube/TikTok/etc.)
+      widget.onDownloadRequest(_currentUrl);
+      return;
+    }
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1D24),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(14),
+              child: Text('Videos detected on this page',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            ),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final u in _sniffed)
+                    ListTile(
+                      leading: const Icon(Icons.play_circle_outline),
+                      title: Text(_shortName(u),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 13)),
+                      trailing: const Icon(Icons.download, size: 20),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        widget.onDownloadRequest(u, referer: _currentUrl);
+                      },
+                    ),
+                  ListTile(
+                    leading: const Icon(Icons.link),
+                    title: const Text('Use this page link instead',
+                        style: TextStyle(fontSize: 13)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      widget.onDownloadRequest(_currentUrl);
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -507,7 +579,7 @@ class _BrowserPageState extends State<BrowserPage> {
             IconButton(
               icon: const Icon(Icons.arrow_back, size: 20),
               onPressed: () async {
-                if (await _controller.canGoBack()) _controller.goBack();
+                if (await _web?.canGoBack() ?? false) _web?.goBack();
               },
             ),
             Expanded(
@@ -532,7 +604,7 @@ class _BrowserPageState extends State<BrowserPage> {
             ),
             IconButton(
               icon: const Icon(Icons.refresh, size: 20),
-              onPressed: () => _controller.reload(),
+              onPressed: () => _web?.reload(),
             ),
           ],
         ),
@@ -553,8 +625,9 @@ class _BrowserPageState extends State<BrowserPage> {
                             child: ActionChip(
                               label: Text(e.key,
                                   style: const TextStyle(fontSize: 12)),
-                              onPressed: () =>
-                                  _controller.loadRequest(Uri.parse(e.value)),
+                              onPressed: () => _web?.loadUrl(
+                                  urlRequest:
+                                      URLRequest(url: WebUri(e.value))),
                             ),
                           ))
                       .toList(),
@@ -564,11 +637,73 @@ class _BrowserPageState extends State<BrowserPage> {
           ),
         ),
       ),
-      body: WebViewWidget(controller: _controller),
+      body: InAppWebView(
+        initialUrlRequest: URLRequest(url: WebUri(_currentUrl)),
+        initialSettings: InAppWebViewSettings(
+          javaScriptEnabled: true,
+          useShouldInterceptRequest: true,
+          useShouldOverrideUrlLoading: true,
+          mediaPlaybackRequiresUserGesture: false,
+          allowsInlineMediaPlayback: true,
+          userAgent: _mobileUA,
+        ),
+        onWebViewCreated: (c) => _web = c,
+        shouldOverrideUrlLoading: (c, action) async {
+          final u = action.request.url?.toString() ?? '';
+          if (!u.startsWith('http://') && !u.startsWith('https://')) {
+            return NavigationActionPolicy.CANCEL;
+          }
+          return NavigationActionPolicy.ALLOW;
+        },
+        shouldInterceptRequest: (c, request) async {
+          _maybeSniff(request.url.toString());
+          return null;
+        },
+        onLoadStart: (c, url) {
+          final u = url?.toString();
+          if (u != null && mounted) {
+            setState(() {
+              _currentUrl = u;
+              _addressController.text = u;
+              _sniffed.clear();
+            });
+          }
+        },
+        onLoadStop: (c, url) {
+          final u = url?.toString();
+          if (u != null && mounted) {
+            setState(() {
+              _currentUrl = u;
+              _addressController.text = u;
+              _loadProgress = 0;
+            });
+          }
+        },
+        onUpdateVisitedHistory: (c, url, _) {
+          final u = url?.toString();
+          if (u != null && mounted) {
+            setState(() {
+              _currentUrl = u;
+              _addressController.text = u;
+            });
+          }
+        },
+        onProgressChanged: (c, p) {
+          if (mounted) setState(() => _loadProgress = p / 100);
+        },
+      ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => widget.onDownloadRequest(_currentUrl),
-        icon: const Icon(Icons.download),
-        label: const Text('Download'),
+        onPressed: _openDownloadSheet,
+        icon: Badge(
+          isLabelVisible: _sniffed.isNotEmpty,
+          label: Text('${_sniffed.length}'),
+          child: const Icon(Icons.download),
+        ),
+        label: Text(_sniffed.isEmpty
+            ? 'Download'
+            : 'Download (${_sniffed.length})'),
+        backgroundColor:
+            _sniffed.isNotEmpty ? Colors.green : null,
       ),
     );
   }
