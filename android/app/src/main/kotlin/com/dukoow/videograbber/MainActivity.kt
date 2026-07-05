@@ -67,9 +67,9 @@ class MainActivity : FlutterActivity() {
                                     "uploader" to info.uploader
                                 )
                                 mainHandler.post { result.success(map) }
-                            } catch (e: Exception) {
+                            } catch (e: Throwable) {
                                 mainHandler.post {
-                                    result.error("INFO_ERROR", e.message ?: "Failed to get info", null)
+                                    result.error("INFO_ERROR", e.message ?: e.toString(), null)
                                 }
                             }
                         }
@@ -96,7 +96,6 @@ class MainActivity : FlutterActivity() {
                                 request.addOption("--no-mtime")
 
                                 if (quality == "mp3") {
-                                    // Extract audio as MP3
                                     request.addOption("-x")
                                     request.addOption("--audio-format", "mp3")
                                     request.addOption("--audio-quality", "0")
@@ -128,9 +127,9 @@ class MainActivity : FlutterActivity() {
                                 }
 
                                 mainHandler.post { result.success(outDir.absolutePath) }
-                            } catch (e: Exception) {
+                            } catch (e: Throwable) {
                                 mainHandler.post {
-                                    result.error("DL_ERROR", e.message ?: "Download failed", null)
+                                    result.error("DL_ERROR", e.message ?: e.toString(), null)
                                 }
                             }
                         }
@@ -145,9 +144,9 @@ class MainActivity : FlutterActivity() {
                                     YoutubeDL.UpdateChannel.STABLE
                                 )
                                 mainHandler.post { result.success(true) }
-                            } catch (e: Exception) {
+                            } catch (e: Throwable) {
                                 mainHandler.post {
-                                    result.error("UPDATE_ERROR", e.message, null)
+                                    result.error("UPDATE_ERROR", e.message ?: e.toString(), null)
                                 }
                             }
                         }
